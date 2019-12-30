@@ -50,7 +50,5 @@ EOF;
             'errmsg' => $errMsg,
             'data' => $data
         ], JSON_UNESCAPED_UNICODE);
-        exit();
     }
-
 }

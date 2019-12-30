@@ -1,6 +1,6 @@
 <?php
 
-include 'base.php';
+include_once 'base.php';
 
 class Api extends Base
 {
@@ -151,6 +151,7 @@ eof;
 }
 
 
+
 echo '<pre>';
 parse_str($_SERVER['QUERY_STRING'], $req);
 if($req['act'] && $req['product_id'] && $req['user_id']){
@@ -166,6 +167,30 @@ if($req['act'] && $req['product_id'] && $req['user_id']){
     echo '初始化---------<br/>';
     apcu_clear_cache();
     showInfo();
+
+    $data = [$req['product_id'] ?? 1, $req['user_id'] ?? 1];
+    $key = sprintf(Api::$REDIS_REMOTE_HT_KEY, $data[1]);
+    $res = Base::conRedis()->hMset($key, [Api::$REDIS_REMOTE_TOTAL_COUNT=>1000, Api::$REDIS_REMOTE_USE_COUNT=>0, 'server_num'=>3]);
+    var_dump($res);
+    (new Api($data[0], $data[1]))::initStock();
+    Base::output();
+}
+
+echo '<pre>';
+parse_str($_SERVER['QUERY_STRING'], $req);
+showInfo();
+if($req['act'] && $req['product_id'] && $req['user_id']){
+    $method = $req['act'];
+    print_r($req);
+    $rm = new \ReflectionMethod('Api',$method);
+    if($rm->isStatic()){
+        (new Api($req['product_id'], $req['user_id']))::$method();
+    }else{
+        (new Api($req['product_id'], $req['user_id']))->$method();
+    }
+}else{
+    echo '初始化---------<br/>';
+    apcu_clear_cache();
 
     $data = [$req['product_id'] ?? 1, $req['user_id'] ?? 1];
     $key = sprintf(Api::$REDIS_REMOTE_HT_KEY, $data[1]);
