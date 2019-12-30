@@ -1,5 +1,8 @@
-# seckill
-  
+# seckill  
+
+搭建测试环境  
+文章地址： https://segmentfault.com/a/1190000021388999  
+
 [2019.12.29 18:40] 更新  
 ====
 1、增加swoole版测试脚本，部分逻辑改写；
