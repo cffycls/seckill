@@ -83,7 +83,8 @@ eof;
         if ($stockNum === false){
             $stockNum = self::initStock();
         }
-        self::output(['stock_num'=>$stockNum]);
+	    print_r(['$APC_LOCAL_STOCK' => apcu_fetch(self::$APC_LOCAL_STOCK)]);
+        //self::output(['stock_num'=>$stockNum]);
     }
 
     // 抢购-减库存
@@ -133,19 +134,38 @@ eof;
 
     static function initStock()
     {
-        echo '初始化库存。。。。。。。。。。<br/>';
+        echo '初始化库存。。。。。。。。。。'.PHP_EOL;
         $data = self::conRedis()->hMGet(self::$REDIS_REMOTE_HT_KEY,
             [self::$REDIS_REMOTE_TOTAL_COUNT, self::$REDIS_REMOTE_USE_COUNT, 'server_num']
         );
         $num = $data[self::$REDIS_REMOTE_TOTAL_COUNT] - $data[self::$REDIS_REMOTE_USE_COUNT];
         $stock = round($num / ($data['server_num'] - 1));
         apcu_add(self::$REDIS_REMOTE_TOTAL_COUNT, $data[self::$REDIS_REMOTE_TOTAL_COUNT]); //总剩余库存
-        apcu_add(self::$APC_LOCAL_STOCK, $num); //总剩余库存分布到本地额度
+	    $effectively = apcu_add(self::$APC_LOCAL_STOCK, $num); //总剩余库存分布到本地额度
         apcu_add(self::$APC_LOCAL_COUNT, $stock);
         apcu_add(self::$APC_LOCAL_USE, 0);
+	    //var_dump([self::$APC_LOCAL_STOCK=> $num, $effectively,'$APC_LOCAL_STOCK' => apcu_fetch(self::$APC_LOCAL_STOCK)]);
+		//var_dump(apcu_cache_info());
+	    ($GLOBALS['table'])->set(self::$REDIS_REMOTE_HT_KEY, [
+		        'redis_key' => self::$REDIS_REMOTE_HT_KEY,
+		        'total_count' => $num,
+		        'local_count' => $stock,
+		        'use_num' => 0,
+		        'server_num' => $data['server_num'],
+	    ]);
 
         return $num;
     }
+	//test
+	public function test()
+	{
+		var_dump(['$APC_LOCAL_STOCK' => apcu_fetch(self::$APC_LOCAL_STOCK)]);
+		$key = sprintf(Api::$REDIS_REMOTE_HT_KEY, self::$productId);
+		$res = Base::conRedis()->hMget($key, [Api::$REDIS_REMOTE_TOTAL_COUNT, Api::$REDIS_REMOTE_USE_COUNT, 'server_num']);
+
+		$data = ($GLOBALS['table'])->get(self::$REDIS_REMOTE_HT_KEY);
+		var_dump($res, $data);
+	}
 
     //私有方法，库存同步: 给总预售数 +1
     private function incUseCount()
@@ -180,28 +200,44 @@ eof;
     }
 }
 
+Swoole\Runtime::enableCoroutine($flags = SWOOLE_HOOK_ALL);
 $http = new Swoole\Http\Server("0.0.0.0", 9501);
-//swoole4.5 redis同步就方法
+$http->set([
+	'enable_coroutine' => true,
+	'worker_num' => swoole_cpu_num(),
+	'pid_file' => './sw.pid',
+	'open_tcp_nodelay' => true,
+	'max_coroutine' => 100000,
+	'max_request' => 100000,
+	'socket_buffer_size' => 2 * 1024 * 1024,
+]);
+$table = new Swoole\Table(1024);
+$table->column('total_count', Swoole\Table::TYPE_INT);
+$table->column('local_count', Swoole\Table::TYPE_INT);
+$table->column('use_num', Swoole\Table::TYPE_INT);
+$table->column('server_num', Swoole\Table::TYPE_INT);
+$table->create();
+$http->set(['dispatch_mode' => 1]);
+//$http->table = $table;
+$GLOBALS['table'] = &$table;
+
 $http->on('request', function ($request, $response) {
     if($request->server['request_uri'] == '/favicon.ico') {
         $response->status(404);
         $response->end();
         return 0;
     }
+    ini_set('apc.enable_cli', 1);
 
     try {
-        ob_start();
-        echo '<pre>';
-        //print_r($request);
         $header = $request->header;
         $server = $request->server;
         $cookie = $request->cookie;
         $get = $request->get;
-        print_r(['$header'=>$header, '$server'=>$server, '$get'=>$get, '$cookie'=>$cookie]);
+        //print_r(['$header'=>$header, '$server'=>$server, '$get'=>$get, '$cookie'=>$cookie]);
         parse_str($server['query_string'], $req);
+	    //var_dump($server['query_string'], $req);
         if($req['act'] && $req['product_id'] && $req['user_id']){
-            echo '<hr/>';
-
             $method = $req['act'];
             $rm = new \ReflectionMethod('Api',$method);
             if($rm->isStatic()){
@@ -209,12 +245,8 @@ $http->on('request', function ($request, $response) {
             }else{
                 (new Api($req['product_id'], $req['user_id']))->$method();
             }
-            $key = sprintf(Api::$REDIS_REMOTE_HT_KEY, $req['product_id']);
-            $res = Base::conRedis()->hMget($key, [Api::$REDIS_REMOTE_TOTAL_COUNT, Api::$REDIS_REMOTE_USE_COUNT, 'server_num']);
-
-            print_r($res);
         }else{
-            echo '初始化---------<br/>';
+            echo '初始化---------'.PHP_EOL;
             apcu_clear_cache();
 
             $data = [$req['product_id'] ?? 1, $req['user_id'] ?? 1];
@@ -222,13 +254,10 @@ $http->on('request', function ($request, $response) {
             $res = Base::conRedis()->hMset($key, [Api::$REDIS_REMOTE_TOTAL_COUNT=>1000, Api::$REDIS_REMOTE_USE_COUNT=>0, 'server_num'=>3]);
             var_dump($res);
             (new Api($data[0], $data[1]))::initStock();
-            Base::output();
         }
 
-        $res = ob_get_contents();
-        ob_end_clean();
-
-        $response->end("<h1>Hello Swoole. #".rand(1000, 9999)."</h1>".$res);
+	    $response->header("Content-Type", "text/plain");
+        $response->end("<h1>Hello Swoole. #".rand(1000, 9999)."</h1>");
     } catch (\Exception $e) { //程序异常
         var_dump($e->getMessage());
     }
